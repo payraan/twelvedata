@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, status
 import requests
 import os
 import uvicorn
 import time
+import json
+from fastapi.responses import JSONResponse
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from pathlib import Path
@@ -25,6 +27,17 @@ app = FastAPI(
 )
 
 BASE_URL = "https://api.twelvedata.com"
+
+# شاخص‌های فنی پشتیبانی شده
+TECHNICAL_INDICATORS = [
+    "ad", "adosc", "adx", "adxr", "ao", "apo", "aroon", "aroonosc", "atr", "avgprice", "bbands", 
+    "bop", "cci", "cmo", "cvi", "dema", "di", "dm", "dmi", "dpo", "dx", "ema", "eom", "fisher", 
+    "fosc", "hma", "ichimoku", "imi", "kama", "kvo", "linearreg", "ma", "macd", "macdext", "mama", 
+    "mfi", "midpoint", "midprice", "mom", "natr", "obv", "percent_b", "ppo", "roc", "rocp", "rocr", 
+    "rsi", "sar", "sma", "smma", "srsi", "stddev", "stoch", "stochrsi", "supertrend", "t3", "tema", 
+    "trange", "trima", "trix", "tsf", "typprice", "ultosc", "vbm", "vi", "vidya", "volatility", 
+    "vosc", "vwap", "vwma", "wclprice", "wilders", "willr", "wma", "zlema"
+]
 
 # نگهداری آمار درخواست‌ها
 request_count = 0
@@ -62,7 +75,8 @@ def home():
         "documentation": "/docs",
         "requests_today": request_count,
         "daily_limit": REQUEST_LIMIT,
-        "status": "Free API plan with limitations: 15-min delayed data, 800 requests per day limit"
+        "status": "Free API plan with limitations: 15-min delayed data, 800 requests per day limit",
+        "supported_indicators": TECHNICAL_INDICATORS
     }
 
 # Helper function to send requests to Twelve Data
@@ -86,8 +100,15 @@ async def fetch_from_twelvedata(endpoint: str, params: Optional[Dict[str, Any]] 
         if response.status_code == 200:
             return response.json()
         elif response.status_code == 400:
-            print(f"❌ Bad Request: {response.text}")
-            raise HTTPException(status_code=400, detail=f"❌ Bad Request: {response.text}")
+            error_message = "Bad Request"
+            try:
+                error_data = response.json()
+                if isinstance(error_data, dict) and "message" in error_data:
+                    error_message = error_data["message"]
+            except:
+                error_message = response.text
+            print(f"❌ Bad Request: {error_message}")
+            raise HTTPException(status_code=400, detail=f"❌ Bad Request: {error_message}")
         elif response.status_code == 401:
             print(f"❌ Unauthorized: {response.text}")
             raise HTTPException(status_code=401, detail="❌ Invalid API key or unauthorized access")
@@ -313,20 +334,69 @@ async def get_etfs(
     
     return await fetch_from_twelvedata("etf", params)
 
-# 🔟 Technical Indicators
-@app.get("/technical_indicators/{indicator}")
+# 🔟 Currency Conversion
+@app.get("/currency_conversion")
+async def get_currency_conversion(
+    symbol: str = Query(..., description="Currency pair to convert (e.g., EUR/USD)"),
+    amount: float = Query(1.0, description="Amount to convert"),
+    date: Optional[str] = Query(None, description="Date for historical conversion (format: YYYY-MM-DD)"),
+    format: str = Query("JSON", description="Output format (JSON, CSV)")
+):
+    """
+    Convert between currencies
+    """
+    params = {
+        "symbol": symbol,
+        "amount": amount,
+        "format": format
+    }
+    
+    if date:
+        params["date"] = date
+    
+    return await fetch_from_twelvedata("currency_conversion", params)
+
+# 1️⃣1️⃣ Logo
+@app.get("/logo")
+async def get_logo(
+    symbol: str = Query(..., description="Symbol to get logo for (e.g., AAPL, EUR/USD)"),
+    format: str = Query("JSON", description="Output format (JSON, CSV)")
+):
+    """
+    Get logo for a specific symbol
+    """
+    params = {
+        "symbol": symbol,
+        "format": format
+    }
+    
+    return await fetch_from_twelvedata("logo", params)
+
+# 1️⃣2️⃣ Technical Indicators - Dynamic endpoint for all indicators
+@app.get("/indicators/{indicator}")
 async def get_technical_indicator(
     indicator: str,
     symbol: str = Query(..., description="Symbol to get data for (e.g., AAPL, EUR/USD, BTC/USD)"),
     interval: str = Query("1day", description="Time interval (e.g., 1min, 5min, 15min, 30min, 1h, 1day, 1week, 1month)"),
     outputsize: int = Query(30, description="Number of data points to return (1-5000)"),
-    time_period: int = Query(20, description="Time period for the indicator calculation"),
+    time_period: int = Query(14, description="Time period for the indicator calculation"),
     series_type: str = Query("close", description="Series type to use (open, high, low, close)"),
+    fast_period: Optional[int] = Query(None, description="Fast period for MACD and other indicators"),
+    slow_period: Optional[int] = Query(None, description="Slow period for MACD and other indicators"),
+    signal_period: Optional[int] = Query(None, description="Signal period for MACD and other indicators"),
+    ma_type: Optional[str] = Query(None, description="MA type for some indicators (e.g., SMA, EMA, WMA)"),
     format: str = Query("JSON", description="Output format (JSON, CSV)")
 ):
     """
     Get technical indicator data for a specific symbol
     """
+    # Check if indicator is supported
+    if indicator.lower() not in TECHNICAL_INDICATORS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported indicator: {indicator}. Supported indicators: {', '.join(TECHNICAL_INDICATORS)}"
+        )
+    
     params = {
         "symbol": symbol,
         "interval": interval,
@@ -336,25 +406,18 @@ async def get_technical_indicator(
         "format": format
     }
     
-    return await fetch_from_twelvedata(f"technical_indicators/{indicator}", params)
-
-# برای سازگاری با نسخه‌های قبلی و حل مشکل 404
-@app.get("/indicators/{indicator}")
-async def get_technical_indicator_backwards_compat(
-    indicator: str,
-    symbol: str = Query(..., description="Symbol to get data for (e.g., AAPL, EUR/USD, BTC/USD)"),
-    interval: str = Query("1day", description="Time interval (e.g., 1min, 5min, 15min, 30min, 1h, 1day, 1week, 1month)"),
-    outputsize: int = Query(30, description="Number of data points to return (1-5000)"),
-    time_period: int = Query(20, description="Time period for the indicator calculation"),
-    series_type: str = Query("close", description="Series type to use (open, high, low, close)"),
-    format: str = Query("JSON", description="Output format (JSON, CSV)")
-):
-    """
-    Backwards compatibility endpoint for technical indicators
-    """
-    return await get_technical_indicator(
-        indicator, symbol, interval, outputsize, time_period, series_type, format
-    )
+    # Add optional parameters if provided
+    if fast_period:
+        params["fast_period"] = fast_period
+    if slow_period:
+        params["slow_period"] = slow_period
+    if signal_period:
+        params["signal_period"] = signal_period
+    if ma_type:
+        params["ma_type"] = ma_type
+    
+    # Use the indicator name directly as the endpoint
+    return await fetch_from_twelvedata(indicator, params)
 
 # Run the server
 if __name__ == "__main__":
