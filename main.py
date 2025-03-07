@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 import requests
 import os
 import uvicorn
+import time
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from pathlib import Path
@@ -25,9 +26,44 @@ app = FastAPI(
 
 BASE_URL = "https://api.twelvedata.com"
 
+# نگهداری آمار درخواست‌ها
+request_count = 0
+last_reset = time.time()
+REQUEST_LIMIT = 750  # محدودیت روزانه 800 با کمی حاشیه امن
+
+@app.middleware("http")
+async def track_requests(request: Request, call_next):
+    global request_count, last_reset
+    
+    # بازنشانی شمارنده هر 24 ساعت
+    if time.time() - last_reset > 86400:  # 24 ساعت = 86400 ثانیه
+        request_count = 0
+        last_reset = time.time()
+    
+    # افزایش شمارنده درخواست‌ها (فقط برای درخواست‌های API واقعی نه مستندات و غیره)
+    if not request.url.path.startswith(("/docs", "/openapi.json", "/redoc", "/favicon.ico", "/")):
+        request_count += 1
+        
+        # بررسی محدودیت درخواست
+        if request_count > REQUEST_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Daily request limit reached. Please try again tomorrow."}
+            )
+    
+    response = await call_next(request)
+    return response
+
 @app.get("/")
 def home():
-    return {"message": "✅ Twelve Data API is running!", "version": "1.0.0"}
+    return {
+        "message": "✅ Twelve Data API is running!", 
+        "version": "1.0.0",
+        "documentation": "/docs",
+        "requests_today": request_count,
+        "daily_limit": REQUEST_LIMIT,
+        "status": "Free API plan with limitations: 15-min delayed data, 800 requests per day limit"
+    }
 
 # Helper function to send requests to Twelve Data
 async def fetch_from_twelvedata(endpoint: str, params: Optional[Dict[str, Any]] = None):
@@ -57,7 +93,7 @@ async def fetch_from_twelvedata(endpoint: str, params: Optional[Dict[str, Any]] 
             raise HTTPException(status_code=401, detail="❌ Invalid API key or unauthorized access")
         elif response.status_code == 429:
             print(f"❌ Too Many Requests: {response.text}")
-            raise HTTPException(status_code=429, detail="❌ Rate limit exceeded. Please try again later.")
+            raise HTTPException(status_code=429, detail="❌ Rate limit exceeded. Please try again later. Free plan limited to 800 requests per day.")
         else:
             print(f"⚠ Unexpected Error: {response.text}")
             raise HTTPException(status_code=response.status_code, detail=f"⚠ Unexpected Error: {response.text[:200]}")
@@ -278,7 +314,7 @@ async def get_etfs(
     return await fetch_from_twelvedata("etf", params)
 
 # 🔟 Technical Indicators
-@app.get("/indicators/{indicator}")
+@app.get("/technical_indicators/{indicator}")
 async def get_technical_indicator(
     indicator: str,
     symbol: str = Query(..., description="Symbol to get data for (e.g., AAPL, EUR/USD, BTC/USD)"),
@@ -301,6 +337,24 @@ async def get_technical_indicator(
     }
     
     return await fetch_from_twelvedata(f"technical_indicators/{indicator}", params)
+
+# برای سازگاری با نسخه‌های قبلی و حل مشکل 404
+@app.get("/indicators/{indicator}")
+async def get_technical_indicator_backwards_compat(
+    indicator: str,
+    symbol: str = Query(..., description="Symbol to get data for (e.g., AAPL, EUR/USD, BTC/USD)"),
+    interval: str = Query("1day", description="Time interval (e.g., 1min, 5min, 15min, 30min, 1h, 1day, 1week, 1month)"),
+    outputsize: int = Query(30, description="Number of data points to return (1-5000)"),
+    time_period: int = Query(20, description="Time period for the indicator calculation"),
+    series_type: str = Query("close", description="Series type to use (open, high, low, close)"),
+    format: str = Query("JSON", description="Output format (JSON, CSV)")
+):
+    """
+    Backwards compatibility endpoint for technical indicators
+    """
+    return await get_technical_indicator(
+        indicator, symbol, interval, outputsize, time_period, series_type, format
+    )
 
 # Run the server
 if __name__ == "__main__":
