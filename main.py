@@ -4,14 +4,18 @@ import os
 import uvicorn
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
+from pathlib import Path
 
-# Load environment variables
-load_dotenv()
+# تعیین مسیر دقیق فایل .env
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(os.path.join(BASE_DIR, '.env'), override=True)
 
-# Get API key
+# دریافت API key
 API_KEY = os.getenv("TWELVEDATA_API_KEY")
 if not API_KEY:
-    raise ValueError("❌ TWELVEDATA_API_KEY not found in environment variables")
+    # استفاده از مقدار پیش‌فرض اگر متغیر محیطی پیدا نشد
+    API_KEY = "d363621cb93c4a6eaf755513f0d754e5"
+    print("⚠️ Using default API key")
 
 app = FastAPI(
     title="Twelve Data API",
